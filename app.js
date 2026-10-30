@@ -126,6 +126,7 @@
 
   const settings = Object.assign({}, DEFAULTS, loadSettings());
   settings.volume = 0.4; // every launch starts at 40%
+  try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {} // ignore iPhone silent switch
   if (TIMBRES.indexOf(settings.timbre) < 0) settings.timbre = "pad";
   settings.bpm = Math.max(40, Math.min(220, settings.bpm || 100));
   if (["2/4", "3/4", "4/4", "6/8"].indexOf(settings.timeSig) < 0) settings.timeSig = "4/4";
