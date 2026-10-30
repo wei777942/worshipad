@@ -1097,11 +1097,20 @@
     } catch (e) {}
   }
 
+  let buildPromise = null;
   async function ensureAudio() {
     unlockSilentSwitch();
     if (started) return;
     try { if (navigator.audioSession && navigator.audioSession.type !== "playback") navigator.audioSession.type = "playback"; } catch (eAS) {} // play even with iPhone silent switch on
-    await Tone.start();
+    await Tone.start(); // every tap (iOS needs it inside the gesture)
+    if (started) return;
+    // only one graph at a time: a second parallel build left a graph the knob could not reach
+    if (!buildPromise) buildPromise = buildAudio().finally(function () { buildPromise = null; });
+    return buildPromise;
+  }
+
+  async function buildAudio() {
+    if (started) return;
     const ctx = Tone.context.rawContext;
 
     hipass = ctx.createBiquadFilter();
@@ -1231,6 +1240,9 @@
     updateMediaSession();
     notifyNativeKeepAlive(true);
 
+    // knob may have moved while the graph was being built
+    padGain.gain.value = Math.max(0, Math.min(1, settings.volume)) * 0.85;
+    metroGain.gain.value = Math.max(0, Math.min(1, settings.metroVol)) * 0.9;
     started = true;
     applyPanRouting();
     setStatus(I18N.ready);
