@@ -1100,6 +1100,7 @@
 
   async function buildAudio() {
     if (started) return;
+    window.__dbgBuilds = (window.__dbgBuilds || 0) + 1;
     await Tone.start();
     const ctx = Tone.context.rawContext;
 
@@ -2032,3 +2033,25 @@
     enhanceAllKnobs: enhanceAllKnobs,
   };
 })();
+
+// ?debug=1 : on-device diagnostics overlay
+(function () {
+  if (!/[?&]debug=1/.test(location.search)) return;
+  const errs = [];
+  window.addEventListener("error", function (e) { errs.push(String(e.message)); });
+  window.addEventListener("unhandledrejection", function (e) { errs.push(String(e.reason)); });
+  const box = document.createElement("pre");
+  box.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:99999;margin:0;padding:6px;font:11px/1.3 monospace;background:rgba(0,0,0,.85);color:#0f0;white-space:pre-wrap;pointer-events:none";
+  document.body.appendChild(box);
+  setInterval(function () {
+    const a = window.__padApp || {};
+    let lv = {}; try { lv = a.readOutputLevels ? a.readOutputLevels() : {}; } catch (e) {}
+    let st = {}; try { st = a.getSettings ? a.getSettings() : {}; } catch (e) {}
+    let cs = "?"; try { cs = Tone.context.state + " sr=" + Tone.context.sampleRate; } catch (e) {}
+    box.textContent = "vol=" + st.volume + " padGain=" + (a.getPadGain ? a.getPadGain().toFixed(3) : "?") +
+      " peak=" + (Number(lv.peak) || 0).toFixed(3) + " voices=" + lv.voices + " fading=" + lv.fading +
+      "\nbuilds=" + (window.__dbgBuilds || 0) + " ctx=" + cs + " audioSession=" + (navigator.audioSession ? navigator.audioSession.type : "none") +
+      "\nerr=" + errs.slice(-3).join(" | ");
+  }, 400);
+})();
+
