@@ -60,18 +60,17 @@
   ];
 
   const TIMBRES = [
-    "pad", "analog", "sky",
-    "warm", "cello", "violins", "tremolo", "swell", "glass",
-    "felt", "crystal", "rhodes",
-    "acoustic", "electric", "bass",
+    "pad", "analog", "sky", "air",
+    "warm", "cello", "violins", "tremolo",
+    "swell", "glass", "felt", "crystal",
+    "rhodes", "acoustic", "electric", "bass",
   ];
 
   const TIMBRE_LABELS = {
-    pad: "Crystal", analog: "Warm", sky: "Sky",
-    warm: "Group", cello: "Cello", violins: "Violin",
-    tremolo: "Shake", swell: "Rise", glass: "Glass",
-    felt: "Soft", crystal: "Bell", rhodes: "Keys",
-    acoustic: "Guitar", electric: "Rock", bass: "Bass",
+    pad: "Crystal", analog: "Warm", sky: "Sky", air: "Air",
+    warm: "Group", cello: "Cello", violins: "Violin", tremolo: "Shake",
+    swell: "Rise", glass: "Glass", felt: "Soft", crystal: "Bell",
+    rhodes: "Keys", acoustic: "Guitar", electric: "Rock", bass: "Bass",
   };
 
   // Recommended Low Cut / High Cut per timbre (keeps main content)
@@ -79,6 +78,7 @@
     pad:      { hipass: 70,  lopass: 9000 },
     analog:   { hipass: 55,  lopass: 4200 },
     sky:      { hipass: 120, lopass: 14000 },
+    air:      { hipass: 95,  lopass: 10500 },
     warm:     { hipass: 90,  lopass: 6000 },
     cello:    { hipass: 45,  lopass: 2800 },
     violins:  { hipass: 200, lopass: 15000 },
@@ -647,6 +647,28 @@
       const airG = ctx.createGain(); airG.gain.value = 700;
       air.connect(airG); airG.connect(filter.frequency); air.start(now);
       self.nodes.push(soft, air, airG);
+    } else if (timbre === "air") {
+      // Air: soft breathy infinite pad — wide sine stack, gentle LP, slow breath (held forever)
+      filter.frequency.value = 2600;
+      filter.Q.value = 0.28;
+      const soft = ctx.createGain();
+      soft.gain.setValueAtTime(0, now);
+      soft.gain.linearRampToValueAtTime(1, now + 1.8);
+      const amps = [0.15, 0.12, 0.09];
+      intervals.forEach(function (semi, i) {
+        addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + semi), -4, amps[i], soft);
+        addOsc(self.nodes, ctx, now, "triangle", midiToFreq(rootMidi + semi), 5, amps[i] * 0.28, soft);
+        addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + semi - 12), 0, amps[i] * 0.22, soft);
+      });
+      // quiet high veil (sustained, not a one-shot layer)
+      [12, 19].forEach(function (semi, i) {
+        addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + semi), 3, 0.035 - i * 0.008, soft);
+      });
+      soft.connect(filter);
+      const breath = ctx.createOscillator(); breath.type = "sine"; breath.frequency.value = 0.07;
+      const breathG = ctx.createGain(); breathG.gain.value = 650;
+      breath.connect(breathG); breathG.connect(filter.frequency); breath.start(now);
+      self.nodes.push(soft, breath, breathG);
     } else if (timbre === "warm") {
       // 合奏: thick warm string ensemble — many detuned saws, gentle vib
       filter.frequency.value = 1900;
@@ -1338,7 +1360,7 @@
     input.dataset.knobEnhanced = "1";
     const wrap = document.createElement("div");
     wrap.className = "hw-knob";
-    wrap.style.setProperty("--knob-glow", "#a78bfa");
+    wrap.style.setProperty("--knob-glow", "#ff5a1f");
     input.parentNode.insertBefore(wrap, input);
     wrap.appendChild(input);
     input.classList.add("hw-knob-input");
@@ -1459,8 +1481,144 @@
     });
   }
 
+  function enhanceRangeFader(input) {
+    if (!input || input.dataset.knobEnhanced === "1" || input.dataset.faderEnhanced === "1") return;
+    input.dataset.faderEnhanced = "1";
+    const wrap = document.createElement("div");
+    wrap.className = "hw-fader";
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    input.classList.add("hw-fader-input");
+    input.setAttribute("tabindex", "-1");
+
+    const track = document.createElement("div");
+    track.className = "hw-fader-track";
+    track.setAttribute("aria-hidden", "true");
+    const fill = document.createElement("div");
+    fill.className = "hw-fader-fill";
+    const cap = document.createElement("div");
+    cap.className = "hw-fader-cap";
+    track.appendChild(fill);
+    track.appendChild(cap);
+    wrap.insertBefore(track, input);
+
+    function clamp(n, a, b) { return Math.min(b, Math.max(a, n)); }
+
+    function paint() {
+      const min = parseFloat(input.min);
+      const max = parseFloat(input.max);
+      const v = parseFloat(input.value);
+      const pct = max === min ? 0 : clamp((v - min) / (max - min), 0, 1);
+      wrap.style.setProperty("--fader-pct", String(pct * 100));
+      fill.style.width = (pct * 100) + "%";
+      cap.style.left = (pct * 100) + "%";
+    }
+
+    const proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    if (proto && proto.set && proto.get) {
+      Object.defineProperty(input, "value", {
+        configurable: true,
+        enumerable: true,
+        get: function () { return proto.get.call(this); },
+        set: function (v) { proto.set.call(this, v); paint(); },
+      });
+    }
+    input.addEventListener("input", paint);
+    paint();
+
+    input.addEventListener("dblclick", function () {
+      if (!input.id || input.id.indexOf("song-edit-") !== 0) return;
+      input.value = input.defaultValue;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    let lastTap = 0;
+    let drag = null;
+
+    function valueFromClientX(clientX) {
+      const rect = track.getBoundingClientRect();
+      const min = parseFloat(input.min);
+      const max = parseFloat(input.max);
+      const step = parseFloat(input.step);
+      const stepN = isFinite(step) && step > 0 ? step : 1;
+      let pct = rect.width <= 0 ? 0 : (clientX - rect.left) / rect.width;
+      pct = clamp(pct, 0, 1);
+      let next = min + pct * (max - min);
+      const decimals = (String(stepN).split(".")[1] || "").length;
+      next = Math.round(next / stepN) * stepN;
+      next = clamp(next, min, max);
+      if (decimals) next = parseFloat(next.toFixed(decimals));
+      return next;
+    }
+
+    function setFromPointer(clientX) {
+      const next = valueFromClientX(clientX);
+      if (String(next) !== input.value) {
+        input.value = String(next);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }
+
+    function finishDrag(moved) {
+      wrap.classList.remove("is-dragging");
+      drag = null;
+      if (!moved) {
+        const now = Date.now();
+        if (now - lastTap < 320) {
+          lastTap = 0;
+          input.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+        } else {
+          lastTap = now;
+        }
+      } else {
+        lastTap = 0;
+      }
+    }
+
+    track.addEventListener("pointerdown", function (e) {
+      if (e.button != null && e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      wrap.classList.add("is-dragging");
+      drag = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, moved: false };
+      setFromPointer(e.clientX);
+      try { track.setPointerCapture(e.pointerId); } catch (err) {}
+    });
+
+    track.addEventListener("pointermove", function (e) {
+      if (!drag) return;
+      if (drag.pointerId != null && e.pointerId !== drag.pointerId) return;
+      e.preventDefault();
+      if (Math.abs(e.clientX - drag.startX) > 3 || Math.abs(e.clientY - drag.startY) > 3) drag.moved = true;
+      setFromPointer(e.clientX);
+    });
+
+    track.addEventListener("pointerup", function (e) {
+      if (!drag) return;
+      if (drag.pointerId != null && e.pointerId !== drag.pointerId) return;
+      e.preventDefault();
+      const moved = drag.moved;
+      try { if (track.hasPointerCapture && track.hasPointerCapture(e.pointerId)) track.releasePointerCapture(e.pointerId); } catch (err) {}
+      finishDrag(moved);
+    });
+
+    track.addEventListener("pointercancel", function () {
+      if (!drag) return;
+      finishDrag(true);
+    });
+  }
+
+  function isBpmInput(input) {
+    return input && (input.id === "ctrl-bpm" || input.id === "song-edit-bpm" ||
+      (input.closest && input.closest('.control[data-param="bpm"], .control[data-song-param="bpm"], .control-fader')));
+  }
+
   function enhanceAllKnobs(root) {
-    (root || document).querySelectorAll(".control input[type=range]").forEach(enhanceRangeKnob);
+    const scope = root || document;
+    scope.querySelectorAll(".control input[type=range]").forEach(function (input) {
+      if (isBpmInput(input)) enhanceRangeFader(input);
+      else enhanceRangeKnob(input);
+    });
   }
   enhanceAllKnobs(document);
 
