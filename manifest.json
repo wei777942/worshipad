@@ -2,11 +2,11 @@
   "name": "WORSHIPAD",
   "short_name": "WORSHIPAD",
   "description": "Worship pad player for live sets",
-  "start_url": "./index.html",
+  "start_url": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#0a0a0f",
-  "theme_color": "#0a0a0f",
+  "background_color": "#e8e2d6",
+  "theme_color": "#e8e2d6",
   "icons": [
     {
       "src": "icons/icon-192.png",
