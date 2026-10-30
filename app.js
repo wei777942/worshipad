@@ -245,6 +245,7 @@
   let delay = null;
   let reverb = null;
   let panner = null;
+  let padMuted = false;
   let padGain = null; // pad/chord volume (native); metro joins after this
   let master = null;
   let muteGain = null;
@@ -339,7 +340,11 @@
       if (started) Tone.Transport.bpm.rampTo(bpm, 0.05);
     } else if (param === "volume" && padGain) {
       // Pad/chord level only (metro is independent). Min = true silence (gain 0).
-      const target = Math.max(0, Math.min(1, value)) * 0.85;
+      const v0 = value < 0.02 ? 0 : value;
+      const target = Math.max(0, Math.min(1, v0)) * 0.85;
+      // iOS Safari: also cut the connection at 0 so nothing leaks through
+      if (target <= 0 && !padMuted) { padMuted = true; const pg = padGain; setTimeout(function () { if (padMuted && pg === padGain) { try { pg.disconnect(); } catch (e) {} } }, 120); }
+      else if (target > 0 && padMuted) { padMuted = false; try { padGain.disconnect(); } catch (e) {} padGain.connect(muteGain); }
       const g = padGain.gain;
       const now = ctxNow();
       if (typeof g.cancelAndHoldAtTime === "function") g.cancelAndHoldAtTime(now);
@@ -1166,7 +1171,9 @@
     Tone.connect(reverb, post);
     post.connect(panner);
     panner.connect(padGain);
+    padMuted = false;
     padGain.connect(muteGain);
+    if (settings.volume < 0.02) applyLive("volume", 0);
 
     // Metronome joins at muteGain (after padGain) so MUTE ducks/stops everything;
     // chord volume does not mute the click.
