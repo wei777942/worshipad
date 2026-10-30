@@ -172,11 +172,11 @@
       try { if (n && n.dispose) n.dispose(); } catch (e5) {}
     });
     try { if (breathLfo) { breathLfo.stop(); } } catch (e6) {}
-    [hipass, lopass, breathLfo, breathDepth, panner, muteGain, metroGain, metroPanner, safetyBrick, outputAnalyser, leftAnalyser, rightAnalyser].forEach(function (n) {
+    [hipass, lopass, breathLfo, breathDepth, panner, padGain, muteGain, metroGain, metroPanner, safetyBrick, outputAnalyser, leftAnalyser, rightAnalyser].forEach(function (n) {
       try { if (n && n.disconnect) n.disconnect(); } catch (e7) {}
     });
     hipass = lopass = breathLfo = breathDepth = null;
-    chorus = delay = reverb = panner = master = muteGain = limiter = null;
+    chorus = delay = reverb = panner = padGain = master = muteGain = limiter = null;
     safetyCompressor = safetyBrick = outputAnalyser = leftAnalyser = rightAnalyser = null;
     metroGain = metroPanner = null;
     started = false;
@@ -243,6 +243,7 @@
   let delay = null;
   let reverb = null;
   let panner = null;
+  let padGain = null; // pad/chord volume (native); metro joins after this
   let master = null;
   let muteGain = null;
   let limiter = null;
@@ -330,17 +331,26 @@
       wet.linearRampToValueAtTime(value, now + RAMP * 3);
     } else if (param === "pan") applyPanRouting();
     else if (param === "metroPan") applyPanRouting();
-    else if (param === "metroVol" && metroGain) {
-      rampParam(metroGain.gain, Math.max(0, Math.min(1, value)) * 0.9, 0.05);
-    } else if (param === "bpm") {
+    else if (param === "bpm") {
       const bpm = Math.max(40, Math.min(220, value));
       settings.bpm = bpm;
       if (started) Tone.Transport.bpm.rampTo(bpm, 0.05);
-    } else if (param === "volume" && master) {
-      const now = Tone.now();
-      master.gain.cancelScheduledValues(now);
-      master.gain.setValueAtTime(master.gain.value, now);
-      master.gain.linearRampToValueAtTime(Math.min(1, value) * 0.85, now + RAMP * 3);
+    } else if (param === "volume" && padGain) {
+      // Pad/chord level only (metro is independent). Min = true silence (gain 0).
+      const target = Math.max(0, Math.min(1, value)) * 0.85;
+      const g = padGain.gain;
+      const now = ctxNow();
+      if (typeof g.cancelAndHoldAtTime === "function") g.cancelAndHoldAtTime(now);
+      else { g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); }
+      g.linearRampToValueAtTime(target <= 0 ? 0 : target, now + Math.max(0.05, RAMP * 3));
+    } else if (param === "metroVol" && metroGain) {
+      // true silence at 0 (avoid setTarget asymptotic tail)
+      const mv = Math.max(0, Math.min(1, value)) * 0.9;
+      const g = metroGain.gain;
+      const now = ctxNow();
+      if (typeof g.cancelAndHoldAtTime === "function") g.cancelAndHoldAtTime(now);
+      else { g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); }
+      g.linearRampToValueAtTime(mv <= 0 ? 0 : mv, now + 0.05);
     }
   }
 
@@ -1108,8 +1118,11 @@
     reverb = new Tone.Reverb({ decay: 9, preDelay: 0.08, wet: settings.reverb });
     await reverb.generate();
 
-    // Headroom on master; brickwall + limiter enforce ~-3 dBFS ceiling
-    master = new Tone.Gain(Math.min(1, settings.volume) * 0.85);
+    // Pad volume (native gain) — min 0 = true silence for chords; metro joins after
+    padGain = ctx.createGain();
+    padGain.gain.value = Math.max(0, Math.min(1, settings.volume)) * 0.85;
+    // Headroom on master (fixed); brickwall + limiter enforce ~-3 dBFS ceiling
+    master = new Tone.Gain(0.85);
     muteGain = ctx.createGain();
     muteGain.gain.value = 1;
 
@@ -1150,9 +1163,11 @@
     post.gain.value = 0.9;
     Tone.connect(reverb, post);
     post.connect(panner);
-    panner.connect(muteGain);
+    panner.connect(padGain);
+    padGain.connect(muteGain);
 
-    // Metronome joins at muteGain so MUTE ducks/stops everything
+    // Metronome joins at muteGain (after padGain) so MUTE ducks/stops everything;
+    // chord volume does not mute the click.
     metroGain.connect(metroPanner);
     metroPanner.connect(muteGain);
     applyPanRouting();
@@ -1959,6 +1974,7 @@
     getTimbreEQ: function () { return JSON.parse(JSON.stringify(TIMBRE_EQ)); },
     recommendedEQ: function (t) { return Object.assign({}, recommendedEQ(t || settings.timbre)); },
     getMuteGain: function () { return muteGain ? muteGain.gain.value : 1; },
+    getPadGain: function () { return padGain ? padGain.gain.value : 0; },
     readOutputLevels: readOutputLevels,
     readChannelLevels: readChannelLevels,
     getBeatLog: function () { return beatLog.slice(); },
