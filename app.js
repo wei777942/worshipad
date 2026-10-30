@@ -1088,10 +1088,12 @@
   }
 
   let ensurePromise = null;
-  function ensureAudio() {
-    // one build at a time: parallel taps used to build two graphs, leaving one
-    // the volume knob could not reach
-    if (started) return Promise.resolve();
+  async function ensureAudio() {
+    if (started) return;
+    // Tone.start on every tap (iOS needs it inside the gesture; never wait on an old one)
+    await Tone.start();
+    if (started) return;
+    // only one graph build at a time (parallel taps used to build two)
     if (!ensurePromise) {
       ensurePromise = buildAudio().finally(function () { ensurePromise = null; });
     }
@@ -1101,7 +1103,6 @@
   async function buildAudio() {
     if (started) return;
     window.__dbgBuilds = (window.__dbgBuilds || 0) + 1;
-    await Tone.start();
     const ctx = Tone.context.rawContext;
 
     hipass = ctx.createBiquadFilter();
