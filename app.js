@@ -99,7 +99,7 @@
     lopass: 9000,
     reverb: 0.55,
     pan: 0,
-    volume: 0.5,
+    volume: 0.4,
     timbre: "pad",
     bpm: 100,
     timeSig: "4/4",
@@ -271,6 +271,7 @@
       const out = {};
       Object.keys(DEFAULTS).forEach(function (k) {
         const t = typeof DEFAULTS[k];
+        if (k === "volume") return; // always start at 40%
         if (t === "number" && typeof parsed[k] === "number" && !isNaN(parsed[k])) out[k] = parsed[k];
         if (t === "string" && typeof parsed[k] === "string") out[k] = parsed[k];
         if (t === "boolean" && typeof parsed[k] === "boolean") out[k] = parsed[k];
