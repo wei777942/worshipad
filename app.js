@@ -271,6 +271,7 @@
       const out = {};
       Object.keys(DEFAULTS).forEach(function (k) {
         const t = typeof DEFAULTS[k];
+        if (k === "volume") return; // volume is never remembered
         if (t === "number" && typeof parsed[k] === "number" && !isNaN(parsed[k])) out[k] = parsed[k];
         if (t === "string" && typeof parsed[k] === "string") out[k] = parsed[k];
         if (t === "boolean" && typeof parsed[k] === "boolean") out[k] = parsed[k];
@@ -280,7 +281,7 @@
   }
 
   function saveSettings() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch (e) {}
+    try { const out = Object.assign({}, settings); delete out.volume; localStorage.setItem(STORAGE_KEY, JSON.stringify(out)); } catch (e) {}
   }
 
   function midiToFreq(m) { return 440 * Math.pow(2, (m - 69) / 12); }
