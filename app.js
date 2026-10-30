@@ -1082,6 +1082,7 @@
 
   async function ensureAudio() {
     if (started) return;
+    try { if (navigator.audioSession && navigator.audioSession.type !== "playback") navigator.audioSession.type = "playback"; } catch (eAS) {} // play even with iPhone silent switch on
     await Tone.start();
     const ctx = Tone.context.rawContext;
 
