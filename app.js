@@ -1262,10 +1262,14 @@
     btn.dataset.id = n.id;
     btn.textContent = n.label;
     btn.setAttribute("aria-label", "Pad " + n.label);
+    btn.addEventListener("pointerdown", function () { btn.classList.add("is-pressed"); });
     btn.addEventListener("pointerup", function (e) {
       e.preventDefault();
+      btn.classList.remove("is-pressed");
       onKey(n.id, n.midi, n.label);
     });
+    btn.addEventListener("pointercancel", function () { btn.classList.remove("is-pressed"); });
+    btn.addEventListener("pointerleave", function () { btn.classList.remove("is-pressed"); });
     keysEl.appendChild(btn);
   });
 
@@ -1328,6 +1332,138 @@
     });
   });
 
+  /* --- Hardware rotary knobs: enhance input[type=range], keep range as source of truth --- */
+  function enhanceRangeKnob(input) {
+    if (!input || input.dataset.knobEnhanced === "1") return;
+    input.dataset.knobEnhanced = "1";
+    const wrap = document.createElement("div");
+    wrap.className = "hw-knob";
+    wrap.style.setProperty("--knob-glow", "#a78bfa");
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    input.classList.add("hw-knob-input");
+    input.setAttribute("tabindex", "-1");
+
+    const face = document.createElement("div");
+    face.className = "hw-knob-face";
+    face.setAttribute("aria-hidden", "true");
+    const ring = document.createElement("div");
+    ring.className = "hw-knob-ring";
+    const cap = document.createElement("div");
+    cap.className = "hw-knob-cap";
+    const ind = document.createElement("div");
+    ind.className = "hw-knob-indicator";
+    cap.appendChild(ind);
+    face.appendChild(ring);
+    face.appendChild(cap);
+    wrap.insertBefore(face, input);
+
+    function clamp(n, a, b) { return Math.min(b, Math.max(a, n)); }
+
+    function paint() {
+      const min = parseFloat(input.min);
+      const max = parseFloat(input.max);
+      const v = parseFloat(input.value);
+      const pct = max === min ? 0 : clamp((v - min) / (max - min), 0, 1);
+      const angle = -135 + pct * 270;
+      wrap.style.setProperty("--knob-pct", String(pct * 100));
+      wrap.style.setProperty("--knob-angle", angle + "deg");
+      wrap.style.setProperty("--knob-fill", pct * 270 + "deg");
+    }
+
+    const proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    if (proto && proto.set && proto.get) {
+      Object.defineProperty(input, "value", {
+        configurable: true,
+        enumerable: true,
+        get: function () { return proto.get.call(this); },
+        set: function (v) { proto.set.call(this, v); paint(); },
+      });
+    }
+    input.addEventListener("input", paint);
+    paint();
+
+    input.addEventListener("dblclick", function () {
+      if (!input.id || input.id.indexOf("song-edit-") !== 0) return;
+      input.value = input.defaultValue;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    let lastTap = 0;
+    let drag = null;
+
+    function applyFromDelta(dy) {
+      const min = parseFloat(input.min);
+      const max = parseFloat(input.max);
+      const step = parseFloat(input.step);
+      const stepN = isFinite(step) && step > 0 ? step : 1;
+      const range = max - min;
+      const sens = 130;
+      let next = drag.startVal + (dy / sens) * range;
+      const decimals = (String(stepN).split(".")[1] || "").length;
+      next = Math.round(next / stepN) * stepN;
+      next = clamp(next, min, max);
+      if (decimals) next = parseFloat(next.toFixed(decimals));
+      if (String(next) !== input.value) {
+        input.value = String(next);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }
+
+    function finishDrag(moved) {
+      wrap.classList.remove("is-dragging");
+      drag = null;
+      if (!moved) {
+        const now = Date.now();
+        if (now - lastTap < 320) {
+          lastTap = 0;
+          input.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+        } else {
+          lastTap = now;
+        }
+      } else {
+        lastTap = 0;
+      }
+    }
+
+    face.addEventListener("pointerdown", function (e) {
+      if (e.button != null && e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      wrap.classList.add("is-dragging");
+      drag = { pointerId: e.pointerId, startY: e.clientY, startVal: parseFloat(input.value), moved: false };
+      try { face.setPointerCapture(e.pointerId); } catch (err) {}
+    });
+
+    face.addEventListener("pointermove", function (e) {
+      if (!drag) return;
+      if (drag.pointerId != null && e.pointerId !== drag.pointerId) return;
+      e.preventDefault();
+      const dy = drag.startY - e.clientY;
+      if (Math.abs(dy) > 3) drag.moved = true;
+      applyFromDelta(dy);
+    });
+
+    face.addEventListener("pointerup", function (e) {
+      if (!drag) return;
+      if (drag.pointerId != null && e.pointerId !== drag.pointerId) return;
+      e.preventDefault();
+      const moved = drag.moved;
+      try { if (face.hasPointerCapture && face.hasPointerCapture(e.pointerId)) face.releasePointerCapture(e.pointerId); } catch (err) {}
+      finishDrag(moved);
+    });
+
+    face.addEventListener("pointercancel", function (e) {
+      if (!drag) return;
+      finishDrag(true);
+    });
+  }
+
+  function enhanceAllKnobs(root) {
+    (root || document).querySelectorAll(".control input[type=range]").forEach(enhanceRangeKnob);
+  }
+  enhanceAllKnobs(document);
+
   function syncTimbreUI() {
     document.querySelectorAll("#timbre-panel .timbre-pick").forEach(function (btn) {
       btn.setAttribute("aria-pressed", btn.dataset.timbre === settings.timbre ? "true" : "false");
@@ -1347,6 +1483,10 @@
 
   syncTimbreUI();
   document.querySelectorAll("#timbre-panel .timbre-pick").forEach(function (btn) {
+    btn.addEventListener("pointerdown", function () { btn.classList.add("is-pressed"); });
+    btn.addEventListener("pointerup", function () { btn.classList.remove("is-pressed"); });
+    btn.addEventListener("pointercancel", function () { btn.classList.remove("is-pressed"); });
+    btn.addEventListener("pointerleave", function () { btn.classList.remove("is-pressed"); });
     btn.addEventListener("click", async function () {
       await ensureAudio();
       setTimbre(btn.dataset.timbre);
@@ -1695,5 +1835,6 @@
       syncSigUI();
       rebuildBeatDots();
     },
+    enhanceAllKnobs: enhanceAllKnobs,
   };
 })();
