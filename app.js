@@ -1087,7 +1087,18 @@
     }, 40);
   }
 
-  async function ensureAudio() {
+  let ensurePromise = null;
+  function ensureAudio() {
+    // one build at a time: parallel taps used to build two graphs, leaving one
+    // the volume knob could not reach
+    if (started) return Promise.resolve();
+    if (!ensurePromise) {
+      ensurePromise = buildAudio().finally(function () { ensurePromise = null; });
+    }
+    return ensurePromise;
+  }
+
+  async function buildAudio() {
     if (started) return;
     await Tone.start();
     const ctx = Tone.context.rawContext;
