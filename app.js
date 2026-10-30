@@ -344,6 +344,7 @@
       if (typeof g.cancelAndHoldAtTime === "function") g.cancelAndHoldAtTime(now);
       else { g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); }
       g.linearRampToValueAtTime(target <= 0 ? 0 : target, now + Math.max(0.05, RAMP * 3));
+      g.setValueAtTime(target <= 0 ? 0 : target, now + Math.max(0.05, RAMP * 3) + 0.02); // hard-set (iOS Safari)
     } else if (param === "metroVol" && metroGain) {
       // true silence at 0 (avoid setTarget asymptotic tail)
       const mv = Math.max(0, Math.min(1, value)) * 0.9;
