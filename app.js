@@ -125,6 +125,7 @@
   const fohSplitEl = document.getElementById("foh-split");
 
   const settings = Object.assign({}, DEFAULTS, loadSettings());
+  settings.volume = 0.4; // every launch starts at 40%
   if (TIMBRES.indexOf(settings.timbre) < 0) settings.timbre = "pad";
   settings.bpm = Math.max(40, Math.min(220, settings.bpm || 100));
   if (["2/4", "3/4", "4/4", "6/8"].indexOf(settings.timeSig) < 0) settings.timeSig = "4/4";
@@ -271,7 +272,6 @@
       const out = {};
       Object.keys(DEFAULTS).forEach(function (k) {
         const t = typeof DEFAULTS[k];
-        if (k === "volume") return; // always start at 40%
         if (t === "number" && typeof parsed[k] === "number" && !isNaN(parsed[k])) out[k] = parsed[k];
         if (t === "string" && typeof parsed[k] === "string") out[k] = parsed[k];
         if (t === "boolean" && typeof parsed[k] === "boolean") out[k] = parsed[k];
@@ -344,7 +344,6 @@
       if (typeof g.cancelAndHoldAtTime === "function") g.cancelAndHoldAtTime(now);
       else { g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); }
       g.linearRampToValueAtTime(target <= 0 ? 0 : target, now + Math.max(0.05, RAMP * 3));
-      g.setValueAtTime(target <= 0 ? 0 : target, now + Math.max(0.05, RAMP * 3) + 0.02); // hard-set (iOS Safari)
     } else if (param === "metroVol" && metroGain) {
       // true silence at 0 (avoid setTarget asymptotic tail)
       const mv = Math.max(0, Math.min(1, value)) * 0.9;
