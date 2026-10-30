@@ -99,7 +99,7 @@
     lopass: 9000,
     reverb: 0.55,
     pan: 0,
-    volume: 0.4,
+    volume: 0.5,
     timbre: "pad",
     bpm: 100,
     timeSig: "4/4",
@@ -125,8 +125,6 @@
   const fohSplitEl = document.getElementById("foh-split");
 
   const settings = Object.assign({}, DEFAULTS, loadSettings());
-  settings.volume = 0.4; // every launch starts at 40%
-  try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {} // ignore iPhone silent switch
   if (TIMBRES.indexOf(settings.timbre) < 0) settings.timbre = "pad";
   settings.bpm = Math.max(40, Math.min(220, settings.bpm || 100));
   if (["2/4", "3/4", "4/4", "6/8"].indexOf(settings.timeSig) < 0) settings.timeSig = "4/4";
@@ -245,7 +243,6 @@
   let delay = null;
   let reverb = null;
   let panner = null;
-  let padMuted = false;
   let padGain = null; // pad/chord volume (native); metro joins after this
   let master = null;
   let muteGain = null;
@@ -340,11 +337,7 @@
       if (started) Tone.Transport.bpm.rampTo(bpm, 0.05);
     } else if (param === "volume" && padGain) {
       // Pad/chord level only (metro is independent). Min = true silence (gain 0).
-      const v0 = value < 0.02 ? 0 : value;
-      const target = Math.max(0, Math.min(1, v0)) * 0.85;
-      // iOS Safari: also cut the connection at 0 so nothing leaks through
-      if (target <= 0 && !padMuted) { padMuted = true; const pg = padGain; setTimeout(function () { if (padMuted && pg === padGain) { try { pg.disconnect(); } catch (e) {} } }, 120); }
-      else if (target > 0 && padMuted) { padMuted = false; try { padGain.disconnect(); } catch (e) {} padGain.connect(muteGain); }
+      const target = Math.max(0, Math.min(1, value)) * 0.85;
       const g = padGain.gain;
       const now = ctxNow();
       if (typeof g.cancelAndHoldAtTime === "function") g.cancelAndHoldAtTime(now);
@@ -1087,22 +1080,9 @@
     }, 40);
   }
 
-  let ensurePromise = null;
   async function ensureAudio() {
     if (started) return;
-    // Tone.start on every tap (iOS needs it inside the gesture; never wait on an old one)
     await Tone.start();
-    if (started) return;
-    // only one graph build at a time (parallel taps used to build two)
-    if (!ensurePromise) {
-      ensurePromise = buildAudio().finally(function () { ensurePromise = null; });
-    }
-    return ensurePromise;
-  }
-
-  async function buildAudio() {
-    if (started) return;
-    window.__dbgBuilds = (window.__dbgBuilds || 0) + 1;
     const ctx = Tone.context.rawContext;
 
     hipass = ctx.createBiquadFilter();
@@ -1184,9 +1164,7 @@
     Tone.connect(reverb, post);
     post.connect(panner);
     panner.connect(padGain);
-    padMuted = false;
     padGain.connect(muteGain);
-    if (settings.volume < 0.02) applyLive("volume", 0);
 
     // Metronome joins at muteGain (after padGain) so MUTE ducks/stops everything;
     // chord volume does not mute the click.
@@ -2034,25 +2012,3 @@
     enhanceAllKnobs: enhanceAllKnobs,
   };
 })();
-
-// ?debug=1 : on-device diagnostics overlay
-(function () {
-  if (!/[?&]debug=1/.test(location.search)) return;
-  const errs = [];
-  window.addEventListener("error", function (e) { errs.push(String(e.message)); });
-  window.addEventListener("unhandledrejection", function (e) { errs.push(String(e.reason)); });
-  const box = document.createElement("pre");
-  box.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:99999;margin:0;padding:6px;font:11px/1.3 monospace;background:rgba(0,0,0,.85);color:#0f0;white-space:pre-wrap;pointer-events:none";
-  document.body.appendChild(box);
-  setInterval(function () {
-    const a = window.__padApp || {};
-    let lv = {}; try { lv = a.readOutputLevels ? a.readOutputLevels() : {}; } catch (e) {}
-    let st = {}; try { st = a.getSettings ? a.getSettings() : {}; } catch (e) {}
-    let cs = "?"; try { cs = Tone.context.state + " sr=" + Tone.context.sampleRate; } catch (e) {}
-    box.textContent = "vol=" + st.volume + " padGain=" + (a.getPadGain ? a.getPadGain().toFixed(3) : "?") +
-      " peak=" + (Number(lv.peak) || 0).toFixed(3) + " voices=" + lv.voices + " fading=" + lv.fading +
-      "\nbuilds=" + (window.__dbgBuilds || 0) + " ctx=" + cs + " audioSession=" + (navigator.audioSession ? navigator.audioSession.type : "none") +
-      "\nerr=" + errs.slice(-3).join(" | ");
-  }, 400);
-})();
-
