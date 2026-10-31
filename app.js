@@ -93,6 +93,21 @@
     bass:     { hipass: 35,  lopass: 1600 },
   };
 
+  // Shared shimmer send (0..1) into +12 PitchShift feedback bus — bright more, warm less
+  const SHIMMER_SEND = {
+    pad: 0.78, analog: 0.22, sky: 0.82, air: 0.72,
+    warm: 0.18, cello: 0.10, violins: 0.48, tremolo: 0.28,
+    swell: 0.22, glass: 0.62, felt: 0.12, crystal: 0.88,
+    rhodes: 0.28, acoustic: 0.36, electric: 0.25, bass: 0.05,
+  };
+  // Quiet +24 (+36) sine air into voice bus (bypasses voice LP); ~-14..-18 dB rel. body
+  const AIR_LAYER = {
+    pad: 0.045, analog: 0.016, sky: 0.048, air: 0.040,
+    warm: 0.014, cello: 0.010, violins: 0.030, tremolo: 0.018,
+    swell: 0.015, glass: 0.035, felt: 0.012, crystal: 0.050,
+    rhodes: 0.020, acoustic: 0.024, electric: 0.016, bass: 0.008,
+  };
+
   const DEFAULTS = {
     crossfade: 3,
     hipass: 70,
@@ -168,15 +183,17 @@
       });
     } catch (e3) {}
     try { if (metroRunning) stopMetronome(true); } catch (e4) {}
-    [chorus, delay, reverb, master, limiter, safetyCompressor].forEach(function (n) {
+    [chorus, delay, reverb, shimmerShift, shimmerShift2, shimmerSend, shimmerReturn, shimmerHP, shimmerLP, shimmerToPost, master, limiter, safetyCompressor].forEach(function (n) {
       try { if (n && n.dispose) n.dispose(); } catch (e5) {}
     });
     try { if (breathLfo) { breathLfo.stop(); } } catch (e6) {}
-    [hipass, lopass, breathLfo, breathDepth, panner, padGain, muteGain, metroGain, metroPanner, safetyBrick, outputAnalyser, leftAnalyser, rightAnalyser].forEach(function (n) {
+    [hipass, lopass, breathLfo, breathDepth, panner, padGain, muteGain, metroGain, metroPanner, safetyBrick, outputAnalyser, leftAnalyser, rightAnalyser, recordDest].forEach(function (n) {
       try { if (n && n.disconnect) n.disconnect(); } catch (e7) {}
     });
     hipass = lopass = breathLfo = breathDepth = null;
-    chorus = delay = reverb = panner = padGain = master = muteGain = limiter = null;
+    chorus = delay = reverb = shimmerShift = shimmerShift2 = shimmerSend = shimmerReturn = shimmerHP = shimmerLP = shimmerToPost = null;
+    recordDest = null;
+    panner = padGain = master = muteGain = limiter = null;
     safetyCompressor = safetyBrick = outputAnalyser = leftAnalyser = rightAnalyser = null;
     metroGain = metroPanner = null;
     started = false;
@@ -215,10 +232,10 @@
   }
 
   async function ensureContextHealthy() {
-    if (!started) {
-      await ensureAudio();
-      return;
-    }
+    // Never auto-build the graph on focus/pageshow/devicechange before the user
+    // has started audio (key/metro). Auto-build raced the volume knob and let the
+    // first chord leak at the default 0.5 when the user had already set mute.
+    if (!started) return;
     if (Tone.context.state === "running") return;
     const ok = await resumeToneContext();
     if (ok) return;
@@ -242,6 +259,14 @@
   let chorus = null;
   let delay = null;
   let reverb = null;
+  let shimmerShift = null; // shared shimmer: series PitchShift(+12) x2
+  let shimmerShift2 = null;
+  let shimmerSend = null;
+  let shimmerReturn = null;
+  let shimmerHP = null;
+  let shimmerLP = null;
+  let shimmerToPost = null;
+  let recordDest = null; // MediaStream tap for offline probes (parallel, after padGain path via muteGain)
   let panner = null;
   let padGain = null; // pad/chord volume (native); metro joins after this
   let master = null;
@@ -320,7 +345,26 @@
 
   function applyLive(param, value) {
     settings[param] = value;
-    if (!started) return;
+    // Volume/metroVol must reach padGain even mid-build (before started=true),
+    // otherwise a focus-triggered build can keep the default 0.5 briefly.
+    if (param === "volume" && padGain) {
+      const target = Math.max(0, Math.min(1, value)) * 0.85;
+      const g = padGain.gain;
+      try {
+        const now = ctxNow();
+        if (typeof g.cancelAndHoldAtTime === "function") g.cancelAndHoldAtTime(now);
+        else { g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); }
+        // Snap to true silence at 0 — no ramp that can leak the first chord.
+        if (target <= 0) g.setValueAtTime(0, now);
+        else if (started) g.linearRampToValueAtTime(target, now + Math.max(0.05, RAMP * 3));
+        else g.setValueAtTime(target, now);
+      } catch (eVol) {
+        try { g.value = target <= 0 ? 0 : target; } catch (e2) {}
+      }
+      if (!started) return;
+    } else if (!started) {
+      return;
+    }
     if (param === "hipass") rampParam(hipass.frequency, value);
     else if (param === "lopass") {
       rampParam(lopass.frequency, value, 0.12);
@@ -337,13 +381,7 @@
       settings.bpm = bpm;
       if (started) Tone.Transport.bpm.rampTo(bpm, 0.05);
     } else if (param === "volume" && padGain) {
-      // Pad/chord level only (metro is independent). Min = true silence (gain 0).
-      const target = Math.max(0, Math.min(1, value)) * 0.85;
-      const g = padGain.gain;
-      const now = ctxNow();
-      if (typeof g.cancelAndHoldAtTime === "function") g.cancelAndHoldAtTime(now);
-      else { g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); }
-      g.linearRampToValueAtTime(target <= 0 ? 0 : target, now + Math.max(0.05, RAMP * 3));
+      // already handled above
     } else if (param === "metroVol" && metroGain) {
       // true silence at 0 (avoid setTarget asymptotic tail)
       const mv = Math.max(0, Math.min(1, value)) * 0.9;
@@ -571,8 +609,8 @@
 
     if (timbre === "pad") {
       // 水晶: shimmering airy worship pad — high sparkle FM + soft body
-      filter.frequency.value = 3800;
-      filter.Q.value = 0.35;
+      filter.frequency.value = 6200;
+      filter.Q.value = 0.32;
       const amps = [0.16, 0.12, 0.1];
       intervals.forEach(function (semi, i) {
         addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + semi), -3, amps[i], filter);
@@ -589,7 +627,7 @@
         mod.connect(mG); mG.connect(car.frequency);
         const cG = ctx.createGain();
         cG.gain.setValueAtTime(0, now);
-        cG.gain.linearRampToValueAtTime(0.045 - i * 0.008, now + 2.5);
+        cG.gain.linearRampToValueAtTime(0.062 - i * 0.01, now + 2.2);
         car.connect(cG); cG.connect(filter);
         car.start(now); mod.start(now);
         self.nodes.push(car, mod, mG, cG);
@@ -622,8 +660,8 @@
       self.nodes.push(soft, breath, breathG);
     } else if (timbre === "sky") {
       // 天空: airy choir / vowel pad + high-octave shimmer
-      filter.frequency.value = 3200;
-      filter.Q.value = 0.35;
+      filter.frequency.value = 6800;
+      filter.Q.value = 0.32;
       const soft = ctx.createGain();
       soft.gain.setValueAtTime(0, now);
       soft.gain.linearRampToValueAtTime(1, now + 1.8);
@@ -660,7 +698,7 @@
       self.nodes.push(soft, air, airG);
     } else if (timbre === "air") {
       // Air: soft breathy infinite pad — wide sine stack, gentle LP, slow breath (held forever)
-      filter.frequency.value = 2600;
+      filter.frequency.value = 5600;
       filter.Q.value = 0.28;
       const soft = ctx.createGain();
       soft.gain.setValueAtTime(0, now);
@@ -1006,6 +1044,18 @@
       });
     }
 
+    // Quiet high air — octaves (+24/+36/+48) and fifths (+31/+43) only; no 3rds/9ths/noise.
+    // Post-filter into bus so voice LP does not bury them; rides this.gain for clean crossfades.
+    // Primary +24 is ~-14..-18 dB rel. body; higher partials successively quieter.
+    const airAmt = AIR_LAYER[timbre];
+    if (airAmt && airAmt > 0) {
+      addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + 24), 0, airAmt, bus);
+      addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + 31), 3, airAmt * 0.45, bus);
+      addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + 36), 0, airAmt * 0.55, bus);
+      addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + 43), -2, airAmt * 0.28, bus);
+      addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + 48), 2, airAmt * 0.32, bus);
+    }
+
     filter.connect(bus);
     bus.connect(this.gain);
     this.gain.connect(hipass);
@@ -1146,6 +1196,17 @@
     reverb = new Tone.Reverb({ decay: 9, preDelay: 0.08, wet: settings.reverb });
     await reverb.generate();
 
+    // Shared shimmer (ONE instance): reverb -> send -> HP -> PS(+12) -> PS(+12) -> LP~7.5k -> post
+    // Series +12/+12 lifts pad body into 1.2–6 kHz; mild feedback into first PS for cascade.
+    // Entire path is before padGain so volume=0 mutes the shimmer tail. No new UI knobs.
+    shimmerSend = new Tone.Gain(0);
+    shimmerHP = new Tone.Filter({ type: "highpass", frequency: 350, Q: 0.5 });
+    shimmerShift = new Tone.PitchShift({ pitch: 12, windowSize: 0.1, delayTime: 0, feedback: 0, wet: 1 });
+    shimmerShift2 = new Tone.PitchShift({ pitch: 12, windowSize: 0.1, delayTime: 0, feedback: 0, wet: 1 });
+    shimmerLP = new Tone.Filter({ type: "lowpass", frequency: 7500, Q: 0.5 });
+    shimmerReturn = new Tone.Gain(0.28);
+    shimmerToPost = new Tone.Gain(1);
+
     // Pad volume (native gain) — min 0 = true silence for chords; metro joins after
     padGain = ctx.createGain();
     padGain.gain.value = Math.max(0, Math.min(1, settings.volume)) * 0.85;
@@ -1190,9 +1251,26 @@
     const post = Tone.context.createGain();
     post.gain.value = 0.9;
     Tone.connect(reverb, post);
+
+    // Shared shimmer path (before padGain). Feedback into PS input — not reverb —
+    // keeps the graph stable (reverb input cycles previously silenced output).
+    Tone.connect(reverb, shimmerSend);
+    shimmerSend.connect(shimmerHP);
+    shimmerHP.connect(shimmerShift);
+    shimmerShift.connect(shimmerShift2);
+    shimmerShift2.connect(shimmerLP);
+    shimmerLP.connect(shimmerToPost);
+    Tone.connect(shimmerToPost, post);
+    shimmerLP.connect(shimmerReturn);
+    Tone.connect(shimmerReturn, shimmerShift);
+
     post.connect(panner);
     panner.connect(padGain);
     padGain.connect(muteGain);
+
+    // parallel record tap after padGain (volume=0 silences recordings too)
+    recordDest = ctx.createMediaStreamDestination();
+    padGain.connect(recordDest);
 
     // Metronome joins at muteGain (after padGain) so MUTE ducks/stops everything;
     // chord volume does not mute the click.
@@ -1240,12 +1318,37 @@
     updateMediaSession();
     notifyNativeKeepAlive(true);
 
-    // knob may have moved while the graph was being built
+    // knob may have moved while the graph was being built — re-read live DOM
+    // (enhanceAllKnobs / late input events can race the long reverb+shimmer await)
+    try {
+      const volEl = document.getElementById("ctrl-volume");
+      if (volEl) {
+        const lv = parseFloat(volEl.value);
+        if (!isNaN(lv)) settings.volume = Math.max(0, Math.min(1, lv));
+      }
+      const mvEl = document.getElementById("ctrl-metroVol");
+      if (mvEl) {
+        const lv = parseFloat(mvEl.value);
+        if (!isNaN(lv)) settings.metroVol = Math.max(0, Math.min(1, lv));
+      }
+    } catch (eKnob) {}
     padGain.gain.value = Math.max(0, Math.min(1, settings.volume)) * 0.85;
     metroGain.gain.value = Math.max(0, Math.min(1, settings.metroVol)) * 0.9;
+    applyShimmerForTimbre(settings.timbre);
     started = true;
     applyPanRouting();
     setStatus(I18N.ready);
+  }
+
+  function applyShimmerForTimbre(timbre) {
+    if (!shimmerSend) return;
+    const amt = Math.max(0, Math.min(1, SHIMMER_SEND[timbre] != null ? SHIMMER_SEND[timbre] : 0.2));
+    try {
+      if (shimmerSend.gain && shimmerSend.gain.rampTo) shimmerSend.gain.rampTo(amt, 0.4);
+      else if (shimmerSend.gain) shimmerSend.gain.value = amt;
+    } catch (e) {
+      try { shimmerSend.gain.value = amt; } catch (e2) {}
+    }
   }
 
   function setActiveUI(id) {
@@ -1292,6 +1395,7 @@
   }
 
   async function onKey(id, midi, label) {
+    await ensureAudio();
     await ensureContextHealthy();
     try {
       const now = ctxNow();
@@ -1342,6 +1446,7 @@
   });
 
   muteBtn.addEventListener("click", async function () {
+    await ensureAudio();
     await ensureContextHealthy();
     hardStop();
   });
@@ -1680,6 +1785,7 @@
     settings.timbre = type;
     syncTimbreUI();
     applyTimbreEQ(type);
+    applyShimmerForTimbre(type);
     saveSettings();
     if (!started) return;
     if (activeId) retargetTimbre(settings.crossfade);
@@ -1800,6 +1906,7 @@
 
   /** Force-start a pad key with crossfade (does not toggle off if same key). */
   async function playKeyForce(id) {
+    await ensureAudio();
     await ensureContextHealthy();
     try {
       const now = ctxNow();
@@ -2006,6 +2113,26 @@
     recommendedEQ: function (t) { return Object.assign({}, recommendedEQ(t || settings.timbre)); },
     getMuteGain: function () { return muteGain ? muteGain.gain.value : 1; },
     getPadGain: function () { return padGain ? padGain.gain.value : 0; },
+    getRecordStream: function () { return recordDest ? recordDest.stream : null; },
+    readSpectrumEnergy: function (loHz, hiHz) {
+      if (!outputAnalyser) return { energy: 0, bins: 0 };
+      const n = outputAnalyser.frequencyBinCount;
+      const buf = new Float32Array(n);
+      outputAnalyser.getFloatFrequencyData(buf);
+      const sr = (Tone.context && Tone.context.sampleRate) || 44100;
+      const binHz = sr / outputAnalyser.fftSize;
+      let sum = 0, count = 0;
+      for (let i = 0; i < n; i++) {
+        const f = i * binHz;
+        if (f < loHz || f > hiHz) continue;
+        // convert dB to linear power
+        const lin = Math.pow(10, buf[i] / 10);
+        sum += lin;
+        count++;
+      }
+      return { energy: sum, bins: count, meanDb: count ? 10 * Math.log10(sum / count + 1e-20) : -Infinity };
+    },
+    getShimmerSend: function () { return shimmerSend && shimmerSend.gain ? shimmerSend.gain.value : 0; },
     readOutputLevels: readOutputLevels,
     readChannelLevels: readChannelLevels,
     getBeatLog: function () { return beatLog.slice(); },
