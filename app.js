@@ -93,19 +93,12 @@
     bass:     { hipass: 35,  lopass: 1600 },
   };
 
-  // Shared shimmer send (0..1) into +12 PitchShift feedback bus — bright more, warm less
+  // Shared shimmer send (0..1) into single +12 PitchShift — bright more, warm less (halved)
   const SHIMMER_SEND = {
-    pad: 0.78, analog: 0.22, sky: 0.82, air: 0.72,
-    warm: 0.18, cello: 0.10, violins: 0.48, tremolo: 0.28,
-    swell: 0.22, glass: 0.62, felt: 0.12, crystal: 0.88,
-    rhodes: 0.28, acoustic: 0.36, electric: 0.25, bass: 0.05,
-  };
-  // Quiet +24 (+36) sine air into voice bus (bypasses voice LP); ~-14..-18 dB rel. body
-  const AIR_LAYER = {
-    pad: 0.045, analog: 0.016, sky: 0.048, air: 0.040,
-    warm: 0.014, cello: 0.010, violins: 0.030, tremolo: 0.018,
-    swell: 0.015, glass: 0.035, felt: 0.012, crystal: 0.050,
-    rhodes: 0.020, acoustic: 0.024, electric: 0.016, bass: 0.008,
+    pad: 0.39, analog: 0.11, sky: 0.41, air: 0.36,
+    warm: 0.09, cello: 0.05, violins: 0.24, tremolo: 0.14,
+    swell: 0.11, glass: 0.31, felt: 0.06, crystal: 0.44,
+    rhodes: 0.14, acoustic: 0.18, electric: 0.125, bass: 0.025,
   };
 
   const DEFAULTS = {
@@ -183,7 +176,7 @@
       });
     } catch (e3) {}
     try { if (metroRunning) stopMetronome(true); } catch (e4) {}
-    [chorus, delay, reverb, shimmerShift, shimmerShift2, shimmerSend, shimmerReturn, shimmerHP, shimmerLP, shimmerToPost, master, limiter, safetyCompressor].forEach(function (n) {
+    [chorus, delay, reverb, shimmerShift, shimmerSend, shimmerHP, shimmerLP, shimmerToPost, master, limiter, safetyCompressor].forEach(function (n) {
       try { if (n && n.dispose) n.dispose(); } catch (e5) {}
     });
     try { if (breathLfo) { breathLfo.stop(); } } catch (e6) {}
@@ -191,7 +184,7 @@
       try { if (n && n.disconnect) n.disconnect(); } catch (e7) {}
     });
     hipass = lopass = breathLfo = breathDepth = null;
-    chorus = delay = reverb = shimmerShift = shimmerShift2 = shimmerSend = shimmerReturn = shimmerHP = shimmerLP = shimmerToPost = null;
+    chorus = delay = reverb = shimmerShift = shimmerSend = shimmerHP = shimmerLP = shimmerToPost = null;
     recordDest = null;
     panner = padGain = master = muteGain = limiter = null;
     safetyCompressor = safetyBrick = outputAnalyser = leftAnalyser = rightAnalyser = null;
@@ -259,10 +252,8 @@
   let chorus = null;
   let delay = null;
   let reverb = null;
-  let shimmerShift = null; // shared shimmer: series PitchShift(+12) x2
-  let shimmerShift2 = null;
+  let shimmerShift = null; // shared shimmer: single PitchShift(+12)
   let shimmerSend = null;
-  let shimmerReturn = null;
   let shimmerHP = null;
   let shimmerLP = null;
   let shimmerToPost = null;
@@ -1044,18 +1035,6 @@
       });
     }
 
-    // Quiet high air — octaves (+24/+36/+48) and fifths (+31/+43) only; no 3rds/9ths/noise.
-    // Post-filter into bus so voice LP does not bury them; rides this.gain for clean crossfades.
-    // Primary +24 is ~-14..-18 dB rel. body; higher partials successively quieter.
-    const airAmt = AIR_LAYER[timbre];
-    if (airAmt && airAmt > 0) {
-      addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + 24), 0, airAmt, bus);
-      addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + 31), 3, airAmt * 0.45, bus);
-      addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + 36), 0, airAmt * 0.55, bus);
-      addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + 43), -2, airAmt * 0.28, bus);
-      addOsc(self.nodes, ctx, now, "sine", midiToFreq(rootMidi + 48), 2, airAmt * 0.32, bus);
-    }
-
     filter.connect(bus);
     bus.connect(this.gain);
     this.gain.connect(hipass);
@@ -1196,15 +1175,12 @@
     reverb = new Tone.Reverb({ decay: 9, preDelay: 0.08, wet: settings.reverb });
     await reverb.generate();
 
-    // Shared shimmer (ONE instance): reverb -> send -> HP -> PS(+12) -> PS(+12) -> LP~7.5k -> post
-    // Series +12/+12 lifts pad body into 1.2–6 kHz; mild feedback into first PS for cascade.
-    // Entire path is before padGain so volume=0 mutes the shimmer tail. No new UI knobs.
+    // Shared shimmer (ONE instance): reverb -> send -> HP -> PS(+12) -> LP~7.5k -> post
+    // One octave only — no second shift, no feedback cascade. Before padGain so vol=0 mutes tail.
     shimmerSend = new Tone.Gain(0);
     shimmerHP = new Tone.Filter({ type: "highpass", frequency: 350, Q: 0.5 });
     shimmerShift = new Tone.PitchShift({ pitch: 12, windowSize: 0.1, delayTime: 0, feedback: 0, wet: 1 });
-    shimmerShift2 = new Tone.PitchShift({ pitch: 12, windowSize: 0.1, delayTime: 0, feedback: 0, wet: 1 });
     shimmerLP = new Tone.Filter({ type: "lowpass", frequency: 7500, Q: 0.5 });
-    shimmerReturn = new Tone.Gain(0.28);
     shimmerToPost = new Tone.Gain(1);
 
     // Pad volume (native gain) — min 0 = true silence for chords; metro joins after
@@ -1252,17 +1228,13 @@
     post.gain.value = 0.9;
     Tone.connect(reverb, post);
 
-    // Shared shimmer path (before padGain). Feedback into PS input — not reverb —
-    // keeps the graph stable (reverb input cycles previously silenced output).
+    // Shared shimmer path (before padGain): one octave up, no feedback.
     Tone.connect(reverb, shimmerSend);
     shimmerSend.connect(shimmerHP);
     shimmerHP.connect(shimmerShift);
-    shimmerShift.connect(shimmerShift2);
-    shimmerShift2.connect(shimmerLP);
+    shimmerShift.connect(shimmerLP);
     shimmerLP.connect(shimmerToPost);
     Tone.connect(shimmerToPost, post);
-    shimmerLP.connect(shimmerReturn);
-    Tone.connect(shimmerReturn, shimmerShift);
 
     post.connect(panner);
     panner.connect(padGain);
